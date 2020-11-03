@@ -1,0 +1,722 @@
+---
+
+output: html_document 
+
+---
+
+```{r global_options, include=FALSE}
+
+
+knitr::opts_chunk$set(
+    warning=FALSE,
+    message=FALSE
+    )
+
+
+```
+
+
+## Loading packages
+
+```{r loading_packages}
+
+library(rmarkdown)
+library(tidyverse)
+library(ggplot2)
+library(Rsubread)
+library(AnnotationHub)
+library(DESeq2)
+library(pheatmap)
+library(ggplot2)
+library(data.table)
+
+```
+
+## Setting AnnotationHub
+### Assign your species of interest
+
+
+```{r annotationhub_setup}
+
+
+AnnotationSpecies <- "Homo sapiens"  # Assign your species 
+ah <- AnnotationHub(hub=getAnnotationHubOption("URL"))   # Bring annotation DB
+
+```
+
+## Running AnnotationHub
+
+```{r running_annotationhub}
+
+
+# Filter annotation of interest
+ahQuery <- query(ah, c("OrgDb", AnnotationSpecies))      
+
+if (length(ahQuery) == 1) {
+    DBName <- names(ahQuery)
+} else if (length(ahQuery) > 1) {
+               DBName <- names(ahQuery)[1]
+} else {
+    print("You don't have a valid DB")
+    rmarkdown::render() 
+} 
+AnnoDb <- ah[[DBName]] # Store into an OrgDb object  
+
+
+# Explore your OrgDb object with following accessors:
+# columns(AnnpDb)
+# keytypes(AnnoDb)
+# keys(AnnoDb, keytype=..)
+# select(AnnoDb, keys=.., columns=.., keytype=...)
+AnnoKey <- keys(AnnoDb, keytype="ENSEMBLTRANS")
+# Note: Annotation has to be done with not genome but transcripts 
+AnnoDb <- select(AnnoDb, 
+                 AnnoKey,
+                 keytype="ENSEMBLTRANS",
+                 columns="SYMBOL")
+
+
+head(AnnoDb)
+```
+
+
+
+
+## Setting featureCounts parameters 
+
+Defined by users 
+
+**Ensembl Hg19 GTF** was downloaded from below:    
+https://hgdownload.soe.ucsc.edu/goldenPath/hg19/bigZips/genes
+
+```{r setting_parameters}
+
+Samples <- c("Mock_72hpi_S1",
+             "Mock_72hpi_S2",
+             "Mock_72hpi_S3",
+             "SARS-CoV-2_72hpi_S7",
+             "SARS-CoV-2_72hpi_S8",
+             "SARS-CoV-2_72hpi_S9")
+
+NameTail=".fastq.gzAligned.sortedByCoord.out.bam"
+
+BAMInputs <- c()   # Path to Input files 
+
+for (i in 1:length(Samples)) {
+
+    BAMInputs[i] <- paste0("./output_ens/", 
+                           Samples[i],
+                           NameTail)
+}
+
+# "mm10", "mm9", "hg38", or "hg19"
+annot.inbuilt="hg19" 
+
+# annotation data such as a data frame or a GTF file
+annot.ext="./STAR-ensembl/hg19.ensGene.gtf"
+
+# annotation type: choose from the GTF file 
+GTF.attrType="transcript_id"
+
+# number of cores to run featureCounts()
+nthreads=8
+
+```
+
+## Running featureCounts 
+### The package is available for Unix and R. For more info, visit below:   
+http://subread.sourceforge.net/
+
+
+
+
+```{r running_featureCounts}
+
+
+# Define a function extracting transcript counts from a BAM file ans saving as a data frame 
+ExtractCounts_fn <- function(BAMInput) {
+
+    # Run featureCounts() function
+    FC <- featureCounts(BAMInput,
+                    annot.inbuilt=annot.inbuilt,
+                    annot.ext=annot.ext,
+                    GTF.attrType=GTF.attrType,
+                    isGTFAnnotationFile=TRUE,
+                    nthreads=nthreads,
+                    verbose=TRUE)
+
+    # Extract a count matrix
+    FCmatrix <- FC$counts
+
+    # Save as a data frame
+    Transcripts=rownames(FCmatrix)
+    Counts=FCmatrix[,1]
+    CountTable <- data.frame(Transcripts, Counts)
+    
+
+    return(CountTable)
+}
+
+
+# Initialize CountTable data frame with the first BAM file
+CountTable <- ExtractCounts_fn(BAMInputs[1])
+
+# Combine count data from the second to the last BAM file to the CountTable data frame
+for (i in 2:length(Samples)) {
+
+         ct <- ExtractCounts_fn(BAMInputs[i])
+
+         CountTable <- full_join(CountTable, ct, by="Transcripts")
+}
+
+
+# Remove undetected transcripts from the CounTable data frame
+CountTable <- CountTable[rowSums(CountTable[, -1]) != 0,]
+
+# Change column names 
+ColRename <- c("Transcripts", Samples)
+colnames(CountTable) <- ColRename
+
+head(CountTable)
+dim(CountTable)
+```
+
+## Adding gene names 
+
+
+```{r genename_annotation}
+
+CountTable <- right_join(AnnoDb, 
+                         CountTable, 
+                         by=c("ENSEMBLTRANS"="Transcripts")) 
+
+
+colnames(CountTable) <- c("Transcript", "Gene", Samples)
+
+head(CountTable)
+```
+
+
+
+## Saving count data as a csv file
+
+
+```{r saving_countdata}
+
+# Create a directory to save csv files
+dir.create("./csv")
+
+# Save as a csv file
+write.csv(CountTable, "./csv/read_count.csv") 
+
+
+```
+
+## Creating metadata for DE analysis
+
+
+```{r creating_metadata}
+
+# Define group level
+GroupLevel <- c("Mock", "COVID")
+
+# Define contrast for DE analysis
+Contrast <- c("Group", "COVID", "Mock")
+
+# Define sample groups
+group <- c(rep("Mock", 3), rep("COVID", 3))
+
+
+# Create metadata
+metadata <- data.frame(Sample=factor(Samples, levels=Samples),
+                       Group=factor(group, levels=GroupLevel))
+
+# Assign row names
+rownames(metadata) <- metadata$Sample
+
+
+print(metadata)
+
+```
+
+
+
+## Plotting library size per sample
+
+```{r library_size}
+
+TPMTable=CountTable
+
+# Create a library size table
+LibSizeTable <- colSums(TPMTable[3:ncol(TPMTable)], 
+                        na.rm=TRUE) 
+# Data Cleaning
+LibSize <- data.frame(Read=LibSizeTable) %>%
+    rownames_to_column(var="Sample") %>%
+    inner_join(metadata[, c("Sample", "Group")],
+               by="Sample")
+
+
+# Creat a bar plot presenting library size of the dataset
+LibSizePlot <- 
+    ggplot(LibSize,
+       aes(x=Sample,
+           y=Read,
+           fill=Group,
+           label=round(Read))) +
+           geom_bar(stat="identity", width=0.8) +
+           ggtitle("Library Size") +
+           ylab("Number of Total Transcripts") +
+           theme_bw() + 
+           scale_y_log10() +
+           geom_text(vjust=1.5) +
+           theme(axis.text.x=element_text(angle=45, 
+                                          vjust=0.5))
+# Print the plot
+print(LibSizePlot)
+
+
+
+```
+
+## Plotting distribution of TPM per sample
+
+
+
+```{r transcripts_distribution}
+
+
+# Data Cleaning
+txDistribution <- gather(TPMTable,
+                         "Sample",
+                         "Read",
+                         -c(Transcript,
+                            Gene))
+
+# Create a density plot presenting distribution of transcripts
+TranscriptDistPlot <-
+    ggplot(txDistribution,
+       aes(x=Read,
+           color=Sample)) + 
+           geom_density(alpha=0.5) + 
+           theme_bw() +
+           ggtitle("Distribution of Total Transcripts") + 
+           xlab("Number of Transcripts") +
+           ylab("Density") + 
+           scale_x_log10()
+
+# Print the plot       
+print(TranscriptDistPlot)
+
+
+
+
+```
+
+## Data cleaning prior to DE analysis 
+
+
+```{r deseq_datacleaning}
+
+# Assigne rownames: Transcript_Gene
+RowNames <- paste(TPMTable$Transcript, TPMTable$Gene, sep="_")
+rownames(TPMTable) <- RowNames
+
+# Build a count matrix without Transcript/Gene
+TPMMatrix <- TPMTable[, Samples]
+
+
+# Check out the cleaned TPM matrix
+head(TPMMatrix)
+
+
+```
+
+## Creating a DESeq object and VST
+
+
+```{r creating_DESeqObject}
+
+
+
+
+dds <- DESeqDataSetFromMatrix(TPMMatrix, 
+                              colData=metadata,
+                              design=~Group)
+
+
+vsd <- varianceStabilizingTransformation(dds,
+                                         blind=TRUE) 
+
+```
+
+## Estimating size factors
+
+
+```{r sizefactors}
+
+
+# Calculate and add size factors to the DEseq object
+dds <- estimateSizeFactors(dds)
+
+# Extract and save the size factors as a data frame
+sizeFactor <- as.data.frame(round(sizeFactors(dds), 3))
+
+colnames(sizeFactor) <- 'Size_Factor'
+
+sizeFactor <- sizeFactor %>%
+    rownames_to_column(var="Sample") %>%
+    inner_join(metadata[, 1:ncol(metadata)], by="Sample") 
+
+# Create a plot comparing the size factors by sample
+SizeFactorPlot <- 
+    ggplot(sizeFactor, aes(x=Sample, 
+                       y=Size_Factor, 
+                       fill=Group,
+                       label=Size_Factor)) +
+    geom_bar(stat="identity", width=0.8) +
+    theme_bw() + 
+    ggtitle("Size Factors") +
+    geom_text(vjust=1.5) +
+    theme(axis.text.x=element_text(angle=45, 
+                                   vjust=0.5)) + 
+ylab("Size Factor")
+
+
+# Print the plot 
+print(SizeFactorPlot)
+
+
+```
+
+## Estimating dispersions and conducting the Wald Test
+
+
+```{r dispersion_waldtest}
+
+# Calculate and add dispersions to the DEseq object
+dds <- estimateDispersions(dds)
+
+# Add wald test to the DESeq object
+dds <- nbinomWaldTest(dds)
+
+```
+
+## Sample QC: Principal Component Analysis 
+
+
+```{r QC_PCA}
+
+
+# Assigne what to compare
+GroupOfInterest <- Contrast[1]
+
+# Extract PCA eigenvalues 
+PCAMatrix <- plotPCA(vsd,
+        intgroup=GroupOfInterest,
+        returnData=TRUE)  
+
+# Create a PCA plot 
+QCPCAPlot<- 
+    plotPCA(vsd,
+        intgroup=GroupOfInterest,
+        returnData=FALSE) +
+theme_bw() +
+ggtitle("PCA")
+
+# Print the plot
+print(QCPCAPlot)
+
+
+
+```
+
+## Sample QC: Sample Clustering Heatmap
+
+
+```{r QC_heatmap}
+
+# Clean the extracted PCA eigenvalue data 
+EigenValues <- as.matrix(PCAMatrix[, c("PC1", "PC2")])
+
+# Setting heatmap metadata for annotation
+HeatmapAnno <- PCAMatrix[, GroupOfInterest]
+names(HeatmapAnno) <- rownames(PCAMatrix)
+HeatmapAnno <- as.data.frame(HeatmapAnno)
+
+# Create a heatmap
+pheatmap(EigenValues, 
+         annotation_row=HeatmapAnno, 
+         main="Sample Clustering Heatmap")
+
+
+
+
+```
+
+## Sample QC: Sample Correlation Heatmap
+
+
+```{r QC_correlation_heatmap}
+# Extract a normalized count matrix
+vsdMatrix <- assay(vsd)
+corMatrix <- cor(vsdMatrix)
+pheatmap(corMatrix,
+         annotation=HeatmapAnno,
+         main="Sample Correlation Heatmap")
+```
+
+
+## Running DE analysis
+
+
+```{r DE_analysis}
+
+# Run DESeq 
+dds <- DESeq(dds)
+
+# Check result names 
+ResNames <- resultsNames(dds)
+
+print(ResNames)
+```
+
+## Creating a dispersion plot
+
+```{r dispersion_plot}
+
+plotDispEsts(dds)
+
+
+```
+
+## Setting how to extract fold-change results
+### Change variables below
+
+```{r setting_resultcondition}
+
+# Set the threshold of FDR as a variable "alpha" 
+alpha=0.1
+
+# Set the coefficients to compare 
+Coef <- ResNames[-1]
+print(Coef) 
+
+# Set a function to clean result table 
+LFCTable_fn <- function(df) {
+    df <- df %>% 
+        rownames_to_column(var="Annotation") %>%
+        separate("Annotation", c("Transcript", "Gene")) %>%
+        mutate(FDR=ifelse(padj < 0.1 & !is.na(padj), 
+                                   "< 0.1", 
+                                   "> 0.1")) 
+    return(df)
+}
+
+```
+
+
+## Extracting log2FoldChanges
+### You can change alpha depending on your interest of FDR level
+
+
+
+```{r DEresult_extraction}
+
+# Extract DE results
+# The Contrast variable was defined in the previous chunk
+
+# Extraction with no shrinkage
+# alpha: FDR threshold
+Res <- results(dds, contrast=Contrast, alpha=alpha)
+
+# Convert the LFC data to a data frame
+ResDF <- LFCTable_fn(as.data.frame(Res))
+
+# Save the LFC data 
+write.csv(ResDF, "./csv/LFC_noshrinkage.csv")
+
+# Extracttion without shrinkage in a list 
+# name has to be determined in the previous chunk
+resList <- list()
+for (i in 1:length(Coef)) {
+    myresult <- lfcShrink(dds,
+                          coef=Coef[i],
+                          type="apeglm")
+    resList[i] <- myresult
+}
+```
+
+## Determining what comparison to explore 
+### Checkout resList in the previous chunk and save it to a data frame 
+
+
+```{r LFC_to_dataframe}
+
+# Save data of interest as a data frame for further analysis 
+shRes <- as.data.frame(resList[[1]])
+
+# Clean the LFC table 
+shRes <- LFCTable_fn(shRes)
+
+# Save the LFC table
+write.csv(shRes, "./csv/LFC_shrinkage.csv")
+head(shRes)
+```
+
+## Exploring distribution of false discovery rate (FDR)
+
+```{r FDR_distribution}
+
+# Create a plot presenting distribution of FDR
+FDR_distPlot <- 
+    ggplot(shRes,
+           aes(x=padj)) + 
+geom_density() + 
+theme_bw() +
+ggtitle("Distribution of False Discovery Rate (FDR)") + 
+xlab("Adjusted P-Value") + 
+ylab("Density") + 
+geom_vline(xintercept=alpha, color="red")
+
+# Print the plot
+print(FDR_distPlot)
+
+```
+
+## Exploring FDR statistics
+
+### - NumOfTx: total number of transcripts
+### - BelowAlpha: number of transcripts whose FDR is below 0.1
+### - NumofNAInFDR: number of transcripts whose FDR is NA
+### - PropOfAboveAlpha: BelowAlpha/NumOfTx 
+
+
+```{r FDR_statistics}
+FDR_stat <- data.frame(NumOfTx=nrow(shRes),
+                       BelowAlpha=sum(shRes$FDR == "< 0.1"),
+                       NumOfNAInFDR=sum(is.na(shRes$padj)), 
+                       PropOfAboveAlpha=sum(shRes$FDR == "< 0.1") / nrow(shRes))
+head(FDR_stat)
+```
+
+
+## Exploring distribution of log2FoldChange
+
+### Black: total transcripts (padj =/= NA)
+### Colored: transcripts above or below FDR=0.1
+
+
+```{r L2FC_distribution}
+# Subset transcripts whose padj are not NA
+shRes_nonNa <- subset(shRes, !is.na(padj))
+
+L2FC_dist <- 
+    ggplot(shRes_nonNa,
+           aes(x=log2FoldChange)) + 
+geom_density(color="black") + 
+geom_density(data=shRes_nonNa,
+             aes(x=log2FoldChange,
+                 color=FDR)) +
+theme_bw() +
+ggtitle("Distribution of Fold Change Values") + 
+ylab("Density")
+
+print(L2FC_dist)
+```
+
+
+## Exploring mean-difference with an MA plot
+
+
+```{r MAplot}
+# Define a function creating an MA plot
+MA_fn <- function(df, tit) {
+    ggplot(df, 
+           aes(x=baseMean,
+               y=log2FoldChange,
+               color=FDR)) +
+geom_point()+ 
+scale_x_log10() + 
+theme_bw() + 
+scale_color_manual(values=c("blue", "grey")) + 
+ggtitle(tit)
+}
+
+# Create MA plots with or without shrinkage
+MAplot_noshr <- MA_fn(ResDF, "Mean-Differene without shrinkage")
+MAplot_shr <- MA_fn(shRes, "Mean-Difference with shrinkage")
+
+
+# Print the plots
+print(MAplot_noshr)
+print(MAplot_shr)
+```
+
+
+## Volcano plot
+
+```{r volcano_plot}
+
+ggplot(shRes, 
+       aes(x=log2FoldChange,
+           y= -log10(padj),
+           color=FDR)) + 
+geom_point() +
+theme_bw() +
+scale_color_manual(values=c("blue", "grey")) + 
+ggtitle("Volcano Plot") + 
+ylab("-log10(FDR)")
+```
+
+
+## Exploring transcription profiling (FDR < 0.1)
+
+
+```{r transcription_profiling_FDR}
+
+# Determine row numbers whose FDR is below alpha 
+RowBelowAlpha <- which(shRes$FDR == "< 0.1")
+
+# Subset normalized transcript counts with FDR below alpha 
+TranscriptsBelowAlpha <- assay(vsd)[RowBelowAlpha,]
+
+# Create a heatmap from TranscriptsBelowAlpha 
+pheatmap(TranscriptsBelowAlpha,
+         annotation=HeatmapAnno,
+         main="Transcription Profiles (FDR < 0.1)")
+```
+
+
+## Exploring transcription profiling 
+## (FDR < 0.1 & log2FoldChange >= 1)
+
+
+```{r transciption_profiling_FDRandFold}
+
+# Set minimum log2FoldChange of your interest: MinL2F
+MinL2F <- 1
+
+# Determine row numbers whose log2FoldChange >= MinL2F
+AboveMinL2F <- which(shRes$FDR == "< 0.1" &
+                      shRes$log2FoldChange >= MinL2F)
+
+# Subset normalized transcript counts with log2FoldChange above MinL2F 
+TranscriptsAboveMinL2F <- assay(vsd)[AboveMinL2F,]
+pheatmap(TranscriptsAboveMinL2F,
+         annotation=HeatmapAnno,
+         main="Transcription Profiles (FDR < 0.1 and log2FoldChange >= 1)",fontsize_row=5)
+
+length(AboveMinL2F)
+```
+
+
+
+## Session info
+
+```{r session_info}
+
+sessionInfo()
+
+
+```
