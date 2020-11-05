@@ -77,7 +77,7 @@ The "GENCODE Gene Annotation" track contains data from all versions of GENCODE. 
 ```STARindex.sh
 
 
-#!bin/bash 
+#!/bin/bash 
 
 # Source of reference:
 # FASTA: https://hgdownload.soe.ucsc.edu/goldenPath/hg19/bigZips/ ---> hg19.fa.gz
@@ -152,7 +152,7 @@ Create star_ens.sh file
 
 
 
-#!bin/bash
+#!/bin/bash
 
 mkdir output_ens 
 
