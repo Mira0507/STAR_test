@@ -16,3 +16,4 @@ dependencies:
   - bioconductor-annotationhub
   - bioconductor-tximport
   - bioconductor-rsubread
+  - bioconductor-apeglm
