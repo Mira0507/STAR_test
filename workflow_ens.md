@@ -11,7 +11,6 @@ https://docs.conda.io/projects/conda/en/latest/user-guide/tasks/manage-environme
 
 
 ```environment.yml
-
 name: star
 channels:
   - conda-forge
@@ -19,8 +18,18 @@ channels:
   - defaults 
 
 dependencies: 
-  - star =2.7.6a  # STAR ver 2.7.6a
-
+  - star =2.7.6a
+  - r-base=4.0.2
+  - r-tidyverse
+  - r-data.table
+  - r-ggplot2
+  - r-markdown
+  - r-pheatmap
+  - bioconductor-deseq2
+  - bioconductor-annotationhub
+  - bioconductor-tximport
+  - bioconductor-rsubread
+  - bioconductor-apeglm
 
 ```
 
