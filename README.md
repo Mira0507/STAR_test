@@ -26,4 +26,9 @@
 ### 6. featureCounts_ens.html 
 - Output of R scripts in featureCounts_ens.Rmd 
 
+### 7. environment.yml
+- conda env congif 
+- conda env "star" 
+
+
 
