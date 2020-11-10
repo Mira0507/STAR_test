@@ -52,8 +52,8 @@ conda activate star
 
 ## 2. Downloading reference files 
 
-- Reference genome sequences (FASTA files): https://hgdownload.soe.ucsc.edu/goldenPath/hg19/bigZips/ ---> hg19.fa.gz ---> unzip 
-- Annotations (GTF file): https://hgdownload.soe.ucsc.edu/goldenPath/hg19/bigZips/genes/  ---> hg19.ensGene.gtf.gz ---> unzip 
+- Reference genome sequences (FASTA files): https://hgdownload.soe.ucsc.edu/goldenPath/hg19/bigZips/ ---> hg19.fa.gz  ---> unzip 
+- Annotations (GTF file): https://hgdownload.soe.ucsc.edu/goldenPath/hg19/bigZips/genes/  ---> hg19.ensGene.gtf.gz  ---> unzip 
 
 GTF files have multiple versions such as **ncbiRefSeq, refGene, ensGene, and knownGene**. For more info, see below:  
 
@@ -121,7 +121,7 @@ bash STARindex.sh
 
 
 
-### 3-2. Running alignment (star_test.sh)
+### 3-2. Running alignment (star_ens.sh)
 
 
 #### Basic parameters
